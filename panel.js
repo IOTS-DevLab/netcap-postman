@@ -4,7 +4,9 @@
     paused: false,
     redact: true,
     filter: "",
+    typeFilter: "all",
     expandedId: null,
+    selected: new Set(),
   };
 
   const REDACT_HEADERS = new Set(["authorization", "cookie", "set-cookie"]);
@@ -19,6 +21,8 @@
     btnClear: document.getElementById("btnClear"),
     btnExport: document.getElementById("btnExport"),
     exportMenu: document.getElementById("exportMenu"),
+    selectAll: document.getElementById("selectAll"),
+    typeFilters: document.getElementById("typeFilters"),
   };
 
   let nextId = 1;
@@ -50,6 +54,28 @@
     return mime.split(";")[0].split("/").pop();
   }
 
+  function classify(mime, resourceType) {
+    const rt = (resourceType || "").toLowerCase();
+    if (rt === "xhr" || rt === "fetch") return "xhr";
+    if (rt === "script") return "js";
+    if (rt === "stylesheet") return "css";
+    if (rt === "image") return "img";
+    if (rt === "font") return "font";
+    if (rt === "media") return "media";
+    if (rt === "document") return "doc";
+    if (rt === "websocket") return "ws";
+
+    const m = (mime || "").split(";")[0].trim();
+    if (m === "text/html") return "doc";
+    if (m === "text/css") return "css";
+    if (/javascript|ecmascript/.test(m)) return "js";
+    if (m.startsWith("image/")) return "img";
+    if (m.startsWith("font/") || m.includes("font")) return "font";
+    if (m.startsWith("audio/") || m.startsWith("video/")) return "media";
+    if (m === "application/json" || m.includes("xml")) return "xhr";
+    return "other";
+  }
+
   function escapeHtml(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({
       "&": "&amp;",
@@ -65,6 +91,7 @@
     const req = harEntry.request;
     const res = harEntry.response;
     const { domain, path } = domainAndPath(req.url);
+    const mime = (res.content && res.content.mimeType) || "";
     const record = {
       id: nextId++,
       method: req.method,
@@ -73,7 +100,8 @@
       path,
       status: res.status,
       statusText: res.statusText,
-      type: (res.content && res.content.mimeType) || "",
+      type: mime,
+      category: classify(mime, harEntry._resourceType),
       size: res.bodySize >= 0 ? res.bodySize : (res.content && res.content.size),
       time: harEntry.time,
       startedDateTime: harEntry.startedDateTime,
@@ -99,6 +127,7 @@
   }
 
   function matchesFilter(r) {
+    if (state.typeFilter !== "all" && r.category !== state.typeFilter) return false;
     if (!state.filter) return true;
     const f = state.filter.toLowerCase();
     return (
@@ -110,14 +139,24 @@
 
   function render() {
     const filtered = state.requests.filter(matchesFilter);
-    els.count.textContent = `${filtered.length} request${filtered.length === 1 ? "" : "s"}`;
+
+    els.count.textContent =
+      state.selected.size > 0
+        ? `${state.selected.size} selected (of ${state.requests.length})`
+        : `${filtered.length} request${filtered.length === 1 ? "" : "s"}`;
     els.empty.classList.toggle("visible", state.requests.length === 0);
+
+    const allSelected = filtered.length > 0 && filtered.every((r) => state.selected.has(r.id));
+    const someSelected = filtered.some((r) => state.selected.has(r.id));
+    els.selectAll.checked = allSelected;
+    els.selectAll.indeterminate = someSelected && !allSelected;
 
     els.body.innerHTML = "";
     for (const r of filtered) {
       const tr = document.createElement("tr");
       tr.dataset.id = r.id;
       tr.innerHTML = `
+        <td class="col-select"><input type="checkbox" class="row-select" ${state.selected.has(r.id) ? "checked" : ""} /></td>
         <td class="method method-${escapeHtml(r.method)}">${escapeHtml(r.method)}</td>
         <td class="${r.status >= 400 || r.status === 0 ? "status-err" : "status-ok"}">${r.status || "-"}</td>
         <td>${escapeHtml(r.domain)}</td>
@@ -126,7 +165,15 @@
         <td>${fmtSize(r.size)}</td>
         <td>${fmtTime(r.time)}</td>
       `;
-      tr.addEventListener("click", () => toggleDetail(r.id));
+      tr.addEventListener("click", (e) => {
+        if (e.target.tagName === "INPUT") return;
+        toggleDetail(r.id);
+      });
+      tr.querySelector(".row-select").addEventListener("change", (e) => {
+        if (e.target.checked) state.selected.add(r.id);
+        else state.selected.delete(r.id);
+        render();
+      });
       els.body.appendChild(tr);
 
       if (state.expandedId === r.id) {
@@ -144,7 +191,7 @@
     const tr = document.createElement("tr");
     tr.className = "detail-row";
     const td = document.createElement("td");
-    td.colSpan = 7;
+    td.colSpan = 8;
 
     const reqHeaders = redactHeaders(r.requestHeaders);
     const resHeaders = redactHeaders(r.responseHeaders);
@@ -190,11 +237,32 @@
   els.btnClear.addEventListener("click", () => {
     state.requests = [];
     state.expandedId = null;
+    state.selected.clear();
+    render();
+  });
+
+  els.selectAll.addEventListener("change", (e) => {
+    const filtered = state.requests.filter(matchesFilter);
+    if (e.target.checked) {
+      filtered.forEach((r) => state.selected.add(r.id));
+    } else {
+      filtered.forEach((r) => state.selected.delete(r.id));
+    }
     render();
   });
 
   els.search.addEventListener("input", (e) => {
     state.filter = e.target.value;
+    render();
+  });
+
+  els.typeFilters.addEventListener("click", (e) => {
+    const btn = e.target.closest(".type-btn");
+    if (!btn) return;
+    state.typeFilter = btn.dataset.type;
+    for (const b of els.typeFilters.querySelectorAll(".type-btn")) {
+      b.classList.toggle("active", b === btn);
+    }
     render();
   });
 
@@ -215,9 +283,10 @@
     if (!format) return;
     e.stopPropagation();
     els.exportMenu.classList.add("hidden");
-    const filtered = state.requests.filter(matchesFilter);
-    if (filtered.length === 0) return;
-    NetcapExport.exportRequests(filtered, format, { redactHeaders });
+    const selected = state.requests.filter((r) => state.selected.has(r.id));
+    const toExport = selected.length > 0 ? selected : state.requests.filter(matchesFilter);
+    if (toExport.length === 0) return;
+    NetcapExport.exportRequests(toExport, format, { redactHeaders });
   });
 
   render();
