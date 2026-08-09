@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "NetCap → Postman Exporter",
+  "version": "1.0.0",
+  "description": "Capture DevTools network traffic and export as a Postman collection, HAR, or curl — entirely offline, nothing leaves your browser.",
+  "author": "Intellorbis Technology Services",
+  "homepage_url": "https://www.intellorbis.com",
+  "devtools_page": "devtools.html",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
